@@ -7,6 +7,10 @@ import time
 from . import util
 from . import html
 import scipy.misc 
+
+from PIL import Image
+import io
+
 try:
     from StringIO import StringIO  # Python 2.7
 except ImportError:
@@ -23,7 +27,7 @@ class Visualizer():
             import tensorflow as tf
             self.tf = tf
             self.log_dir = os.path.join(opt.checkpoints_dir, opt.name, 'logs')
-            self.writer = tf.summary.FileWriter(self.log_dir)
+            self.writer = tf.summary.create_file_writer(self.log_dir)
 
         if self.use_html:
             self.web_dir = os.path.join(opt.checkpoints_dir, opt.name, 'web')
@@ -37,23 +41,53 @@ class Visualizer():
 
     # |visuals|: dictionary of images to display or save
     def display_current_results(self, visuals, epoch, step):
-        if self.tf_log: # show images in tensorboard output
-            img_summaries = []
-            for label, image_numpy in visuals.items():
-                # Write the image to a string
-                try:
-                    s = StringIO()
-                except:
-                    s = BytesIO()
-                scipy.misc.toimage(image_numpy).save(s, format="jpeg")
-                # Create an Image object
-                img_sum = self.tf.Summary.Image(encoded_image_string=s.getvalue(), height=image_numpy.shape[0], width=image_numpy.shape[1])
-                # Create a Summary value
-                img_summaries.append(self.tf.Summary.Value(tag=label, image=img_sum))
+        # if self.tf_log:  # show images in tensorboard output
+        #     img_summaries = []
+        #     for label, image_numpy in visuals.items():
+        #         # Ensure the image is in uint8 format if it is not
+        #         if image_numpy.dtype != np.uint8:
+        #             image_numpy = (255.0 / image_numpy.max() * (image_numpy - image_numpy.min())).astype(np.uint8)
+                
+        #         # Convert the image to a format compatible with tf.summary.image
+        #         image_pil = Image.fromarray(image_numpy)
+        #         buf = io.BytesIO()
+        #         image_pil.save(buf, format='JPEG')
+        #         buf.seek(0)
+        #         encoded_image_string = buf.getvalue()
 
-            # Create and write Summary
-            summary = self.tf.Summary(value=img_summaries)
-            self.writer.add_summary(summary, step)
+        #         # Create an Image object
+        #         img_sum = self.tf.summary.image(encoded_image_string=encoded_image_string,
+        #                                    height=image_numpy.shape[0],
+        #                                    width=image_numpy.shape[1])
+        #         # Create a Summary value
+        #         img_summaries.append(self.tf.summary.value(tag=label, image=img_sum))
+
+        #     # Create and write Summary
+        #     summary = self.tf.summary(value=img_summaries)
+        #     self.writer.add_summary(summary, step)
+        #     self.writer.flush()
+
+        with self.writer.as_default():
+          for label, image_numpy in visuals.items():
+              # Ensure the image is in uint8 format if it is not
+              if image_numpy.dtype != np.uint8:
+                  image_numpy = (255.0 / image_numpy.max() * (image_numpy - image_numpy.min())).astype(np.uint8)
+              
+              # Convert the image to a PIL image and save as JPEG
+              image_pil = Image.fromarray(image_numpy)
+              buf = io.BytesIO()
+              image_pil.save(buf, format='JPEG')
+              encoded_image_string = buf.getvalue()
+
+              # Convert image data to tensor
+              image_tensor = self.tf.image.decode_image(encoded_image_string, channels=image_numpy.shape[2])
+              image_tensor = self.tf.expand_dims(image_tensor, axis=0)
+
+              # Write image summary
+              self.tf.summary.image(name=label, data=image_tensor, step=step)
+
+          # Flush the writer to make sure all pending events have been written to disk
+          self.writer.flush()
 
         if self.use_html: # save images to a html file
             for label, image_numpy in visuals.items():
@@ -96,9 +130,10 @@ class Visualizer():
     # errors: dictionary of error labels and values
     def plot_current_errors(self, errors, step):
         if self.tf_log:
-            for tag, value in errors.items():            
-                summary = self.tf.Summary(value=[self.tf.Summary.Value(tag=tag, simple_value=value)])
-                self.writer.add_summary(summary, step)
+            with self.writer.as_default():
+              for tag, value in errors.items():
+                  self.tf.summary.scalar(tag, value, step=step)
+              self.writer.flush()
 
     # errors: same format as |errors| of plotCurrentErrors
     def print_current_errors(self, epoch, i, errors, t):
